@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2024 the original author or authors.
+ * Copyright 2012-2025 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 package org.springframework.boot.logging.log4j2;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URL;
 import java.net.URLConnection;
 import java.util.ArrayList;
@@ -47,6 +48,8 @@ import org.apache.logging.log4j.core.net.ssl.SslConfigurationFactory;
 import org.apache.logging.log4j.core.util.AuthorizationProvider;
 import org.apache.logging.log4j.core.util.NameUtil;
 import org.apache.logging.log4j.jul.Log4jBridgeHandler;
+import org.apache.logging.log4j.status.StatusConsoleListener;
+import org.apache.logging.log4j.status.StatusLogger;
 import org.apache.logging.log4j.util.PropertiesUtil;
 
 import org.springframework.boot.context.properties.bind.BindResult;
@@ -62,7 +65,6 @@ import org.springframework.boot.logging.LoggingInitializationContext;
 import org.springframework.boot.logging.LoggingSystem;
 import org.springframework.boot.logging.LoggingSystemFactory;
 import org.springframework.core.Conventions;
-import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.env.Environment;
 import org.springframework.core.io.Resource;
@@ -91,6 +93,9 @@ public class Log4J2LoggingSystem extends AbstractLoggingSystem {
 
 	static final String ENVIRONMENT_KEY = Conventions.getQualifiedAttributeName(Log4J2LoggingSystem.class,
 			"environment");
+
+	static final String STATUS_LISTENER_KEY = Conventions.getQualifiedAttributeName(Log4J2LoggingSystem.class,
+			"statusListener");
 
 	private static final LogLevels<Level> LEVELS = new LogLevels<>();
 
@@ -213,9 +218,12 @@ public class Log4J2LoggingSystem extends AbstractLoggingSystem {
 		if (isAlreadyInitialized(loggerContext)) {
 			return;
 		}
+		StatusConsoleListener listener = new StatusConsoleListener(Level.WARN);
+		StatusLogger.getLogger().registerListener(listener);
+		loggerContext.putObject(STATUS_LISTENER_KEY, listener);
 		Environment environment = initializationContext.getEnvironment();
 		if (environment != null) {
-			getLoggerContext().putObject(ENVIRONMENT_KEY, environment);
+			loggerContext.putObject(ENVIRONMENT_KEY, environment);
 			Log4J2LoggingSystem.propertySource.setEnvironment(environment);
 			PropertiesUtil.getProperties().addPropertySource(Log4J2LoggingSystem.propertySource);
 		}
@@ -257,7 +265,7 @@ public class Log4J2LoggingSystem extends AbstractLoggingSystem {
 	 * @since 2.6.0
 	 */
 	protected void loadConfiguration(String location, LogFile logFile, List<String> overrides) {
-		Assert.notNull(location, "Location must not be null");
+		Assert.notNull(location, "'location' must not be null");
 		try {
 			List<Configuration> configurations = new ArrayList<>();
 			LoggerContext context = getLoggerContext();
@@ -275,14 +283,12 @@ public class Log4J2LoggingSystem extends AbstractLoggingSystem {
 	}
 
 	private Configuration load(String location, LoggerContext context) throws IOException {
-		Resource resource = new ApplicationResourceLoader().getResource(location);
-		ConfigurationSource source = getConfigurationSource(resource);
-		return ConfigurationFactory.getInstance().getConfiguration(context, source);
-	}
-
-	private ConfigurationSource getConfigurationSource(Resource resource) throws IOException {
+		Resource resource = ApplicationResourceLoader.get().getResource(location);
+		ConfigurationFactory factory = ConfigurationFactory.getInstance();
 		if (resource.isFile()) {
-			return new ConfigurationSource(resource.getInputStream(), resource.getFile());
+			try (InputStream inputStream = resource.getInputStream()) {
+				return factory.getConfiguration(context, new ConfigurationSource(inputStream, resource.getFile()));
+			}
 		}
 		URL url = resource.getURL();
 		AuthorizationProvider authorizationProvider = ConfigurationFactory
@@ -291,7 +297,10 @@ public class Log4J2LoggingSystem extends AbstractLoggingSystem {
 				? SslConfigurationFactory.getSslConfiguration() : null;
 		URLConnection connection = UrlConnectionFactory.createConnection(url, 0, sslConfiguration,
 				authorizationProvider);
-		return new ConfigurationSource(connection.getInputStream(), url, connection.getLastModified());
+		try (InputStream inputStream = connection.getInputStream()) {
+			return factory.getConfiguration(context,
+					new ConfigurationSource(inputStream, url, connection.getLastModified()));
+		}
 	}
 
 	private CompositeConfiguration createComposite(List<Configuration> configurations) {
@@ -437,9 +446,14 @@ public class Log4J2LoggingSystem extends AbstractLoggingSystem {
 		super.cleanUp();
 		LoggerContext loggerContext = getLoggerContext();
 		markAsUninitialized(loggerContext);
+		StatusConsoleListener listener = (StatusConsoleListener) loggerContext.getObject(STATUS_LISTENER_KEY);
+		if (listener != null) {
+			StatusLogger.getLogger().removeListener(listener);
+			loggerContext.removeObject(STATUS_LISTENER_KEY);
+		}
 		loggerContext.getConfiguration().removeFilter(FILTER);
 		Log4J2LoggingSystem.propertySource.setEnvironment(null);
-		getLoggerContext().removeObject(ENVIRONMENT_KEY);
+		loggerContext.removeObject(ENVIRONMENT_KEY);
 	}
 
 	private LoggerConfig getLogger(String name) {
@@ -490,7 +504,7 @@ public class Log4J2LoggingSystem extends AbstractLoggingSystem {
 	/**
 	 * {@link LoggingSystemFactory} that returns {@link Log4J2LoggingSystem} if possible.
 	 */
-	@Order(Ordered.LOWEST_PRECEDENCE)
+	@Order(0)
 	public static class Factory implements LoggingSystemFactory {
 
 		private static final boolean PRESENT = ClassUtils

@@ -1,5 +1,5 @@
 /*
- * Copyright 2021-2024 the original author or authors.
+ * Copyright 2021-2025 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package org.springframework.boot.build.bom.bomr;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
-import java.util.function.BiPredicate;
+import java.util.function.BiFunction;
 
 import javax.inject.Inject;
 
@@ -35,6 +35,7 @@ import org.springframework.boot.build.bom.bomr.ReleaseSchedule.Release;
 import org.springframework.boot.build.bom.bomr.github.Milestone;
 import org.springframework.boot.build.bom.bomr.version.DependencyVersion;
 import org.springframework.boot.build.properties.BuildProperties;
+import org.springframework.boot.build.properties.BuildType;
 
 /**
  * A {@link Task} to move to snapshot dependencies.
@@ -43,7 +44,9 @@ import org.springframework.boot.build.properties.BuildProperties;
  */
 public abstract class MoveToSnapshots extends UpgradeDependencies {
 
-	private static final Logger log = LoggerFactory.getLogger(MoveToSnapshots.class);
+	private static final Logger logger = LoggerFactory.getLogger(MoveToSnapshots.class);
+
+	private final BuildType buildType = BuildProperties.get(getProject()).buildType();
 
 	@Inject
 	public MoveToSnapshots(BomExtension bom) {
@@ -63,21 +66,9 @@ public abstract class MoveToSnapshots extends UpgradeDependencies {
 	}
 
 	@Override
-	protected String issueTitle(Upgrade upgrade) {
-		String snapshotVersion = upgrade.getVersion().toString();
-		String releaseVersion = snapshotVersion.substring(0, snapshotVersion.length() - "-SNAPSHOT".length());
-		return "Upgrade to " + upgrade.getLibrary().getName() + " " + releaseVersion;
-	}
-
-	@Override
 	protected String commitMessage(Upgrade upgrade, int issueNumber) {
-		return "Start building against " + upgrade.getLibrary().getName() + " " + releaseVersion(upgrade) + " snapshots"
-				+ "\n\nSee gh-" + issueNumber;
-	}
-
-	private String releaseVersion(Upgrade upgrade) {
-		String snapshotVersion = upgrade.getVersion().toString();
-		return snapshotVersion.substring(0, snapshotVersion.length() - "-SNAPSHOT".length());
+		return "Start building against " + upgrade.toRelease().getNameAndVersion() + " snapshots" + "\n\nSee gh-"
+				+ issueNumber;
 	}
 
 	@Override
@@ -86,27 +77,37 @@ public abstract class MoveToSnapshots extends UpgradeDependencies {
 	}
 
 	@Override
-	protected List<BiPredicate<Library, DependencyVersion>> determineUpdatePredicates(Milestone milestone) {
-		return switch (BuildProperties.get(getProject()).buildType()) {
-			case OPEN_SOURCE -> determineOpenSourceUpdatePredicates(milestone);
-			case COMMERCIAL -> super.determineUpdatePredicates(milestone);
+	protected BiFunction<Library, DependencyVersion, VersionOption> createVersionOptionResolver(Milestone milestone) {
+		return switch (this.buildType) {
+			case OPEN_SOURCE -> createOpenSourceVersionOptionResolver(milestone);
+			case COMMERCIAL -> super.createVersionOptionResolver(milestone);
 		};
 	}
 
-	private List<BiPredicate<Library, DependencyVersion>> determineOpenSourceUpdatePredicates(Milestone milestone) {
+	private BiFunction<Library, DependencyVersion, VersionOption> createOpenSourceVersionOptionResolver(
+			Milestone milestone) {
 		Map<String, List<Release>> scheduledReleases = getScheduledOpenSourceReleases(milestone);
-		List<BiPredicate<Library, DependencyVersion>> predicates = super.determineUpdatePredicates(milestone);
-		predicates.add((library, candidate) -> {
-			List<Release> releases = scheduledReleases.get(library.getCalendarName());
-			boolean match = (releases != null)
-					&& releases.stream().anyMatch((release) -> candidate.isSnapshotFor(release.getVersion()));
-			if (log.isInfoEnabled() && !match) {
-				log.info("Ignoring {}. No release of {} scheduled before {}", candidate, library.getName(),
-						milestone.getDueOn());
+		BiFunction<Library, DependencyVersion, VersionOption> resolver = super.createVersionOptionResolver(milestone);
+		return (library, dependencyVersion) -> {
+			VersionOption versionOption = resolver.apply(library, dependencyVersion);
+			if (versionOption != null) {
+				List<Release> releases = scheduledReleases.get(library.getCalendarName());
+				if (releases != null) {
+					List<Release> matches = releases.stream()
+						.filter((release) -> dependencyVersion.isSnapshotFor(release.getVersion()))
+						.toList();
+					if (!matches.isEmpty()) {
+						return new VersionOption.SnapshotVersionOption(versionOption.getVersion(),
+								matches.get(0).getVersion());
+					}
+				}
+				if (logger.isInfoEnabled()) {
+					logger.info("Ignoring {}. No release of {} scheduled before {}", dependencyVersion,
+							library.getName(), milestone.getDueOn());
+				}
 			}
-			return match;
-		});
-		return predicates;
+			return null;
+		};
 	}
 
 	private Map<String, List<Release>> getScheduledOpenSourceReleases(Milestone milestone) {

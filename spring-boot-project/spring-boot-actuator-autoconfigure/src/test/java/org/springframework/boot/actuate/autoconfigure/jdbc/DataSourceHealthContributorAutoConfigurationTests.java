@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2024 the original author or authors.
+ * Copyright 2012-2025 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,12 +19,15 @@ package org.springframework.boot.actuate.autoconfigure.jdbc;
 import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 import javax.sql.DataSource;
 
+import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.actuate.autoconfigure.health.HealthContributorAutoConfiguration;
 import org.springframework.boot.actuate.autoconfigure.jdbc.DataSourceHealthContributorAutoConfiguration.RoutingDataSourceHealthContributor;
@@ -41,6 +44,7 @@ import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Scope;
 import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -70,12 +74,14 @@ class DataSourceHealthContributorAutoConfigurationTests {
 
 	@Test
 	void runWhenMultipleDataSourceBeansShouldCreateCompositeIndicator() {
-		this.contextRunner.withUserConfiguration(EmbeddedDataSourceConfiguration.class, DataSourceConfig.class)
+		this.contextRunner
+			.withUserConfiguration(EmbeddedDataSourceConfiguration.class, DataSourceConfig.class,
+					NonStandardDataSourceConfig.class)
 			.run((context) -> {
 				assertThat(context).hasSingleBean(CompositeHealthContributor.class);
 				CompositeHealthContributor contributor = context.getBean(CompositeHealthContributor.class);
 				String[] names = contributor.stream().map(NamedContributor::getName).toArray(String[]::new);
-				assertThat(names).containsExactlyInAnyOrder("dataSource", "testDataSource");
+				assertThat(names).containsExactlyInAnyOrder("dataSource", "standardDataSource", "nonDefaultDataSource");
 			});
 	}
 
@@ -211,17 +217,55 @@ class DataSourceHealthContributorAutoConfigurationTests {
 		});
 	}
 
+	@Test
+	void prototypeDataSourceIsIgnored() {
+		this.contextRunner
+			.withUserConfiguration(EmbeddedDataSourceConfiguration.class, PrototypeDataSourceConfiguration.class)
+			.run((context) -> {
+				assertThat(context).doesNotHaveBean(CompositeHealthContributor.class);
+				assertThat(context.getBeansOfType(DataSourceHealthIndicator.class)).hasSize(1);
+			});
+	}
+
 	@Configuration(proxyBeanMethods = false)
 	@EnableConfigurationProperties
 	static class DataSourceConfig {
 
 		@Bean
-		@ConfigurationProperties(prefix = "spring.datasource.test")
-		DataSource testDataSource() {
+		@ConfigurationProperties("spring.datasource.test")
+		DataSource standardDataSource() {
 			return DataSourceBuilder.create()
 				.type(org.apache.tomcat.jdbc.pool.DataSource.class)
 				.driverClassName("org.hsqldb.jdbc.JDBCDriver")
 				.url("jdbc:hsqldb:mem:test")
+				.username("sa")
+				.build();
+		}
+
+	}
+
+	@Configuration(proxyBeanMethods = false)
+	@EnableConfigurationProperties
+	static class NonStandardDataSourceConfig {
+
+		@Bean(defaultCandidate = false)
+		@ConfigurationProperties("spring.datasource.non-default")
+		DataSource nonDefaultDataSource() {
+			return DataSourceBuilder.create()
+				.type(org.apache.tomcat.jdbc.pool.DataSource.class)
+				.driverClassName("org.hsqldb.jdbc.JDBCDriver")
+				.url("jdbc:hsqldb:mem:non-default")
+				.username("sa")
+				.build();
+		}
+
+		@Bean(autowireCandidate = false)
+		@ConfigurationProperties("spring.datasource.non-autowire")
+		DataSource nonAutowireDataSource() {
+			return DataSourceBuilder.create()
+				.type(org.apache.tomcat.jdbc.pool.DataSource.class)
+				.driverClassName("org.hsqldb.jdbc.JDBCDriver")
+				.url("jdbc:hsqldb:mem:non-autowire")
 				.username("sa")
 				.build();
 		}
@@ -283,6 +327,28 @@ class DataSourceHealthContributorAutoConfigurationTests {
 			given(routingDataSource.unwrap(AbstractRoutingDataSource.class)).willReturn(routingDataSource);
 			given(routingDataSource.getResolvedDataSources()).willReturn(dataSources);
 			return routingDataSource;
+		}
+
+	}
+
+	@Configuration(proxyBeanMethods = false)
+	static class PrototypeDataSourceConfiguration {
+
+		@Bean
+		@Scope(BeanDefinition.SCOPE_PROTOTYPE)
+		DataSource dataSourcePrototype(String username, String password) {
+			return createHikariDataSource(username, password);
+		}
+
+		private HikariDataSource createHikariDataSource(String username, String password) {
+			String url = "jdbc:hsqldb:mem:test-" + UUID.randomUUID();
+			HikariDataSource hikariDataSource = DataSourceBuilder.create()
+				.url(url)
+				.type(HikariDataSource.class)
+				.username(username)
+				.password(password)
+				.build();
+			return hikariDataSource;
 		}
 
 	}

@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2024 the original author or authors.
+ * Copyright 2012-2025 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,6 +46,7 @@ import reactor.core.publisher.Mono;
 import org.springframework.aot.AotDetector;
 import org.springframework.beans.factory.BeanCreationException;
 import org.springframework.beans.factory.BeanCurrentlyInCreationException;
+import org.springframework.beans.factory.BeanDefinitionStoreException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.UnsatisfiedDependencyException;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -72,6 +73,7 @@ import org.springframework.boot.context.event.ApplicationStartingEvent;
 import org.springframework.boot.context.event.SpringApplicationEvent;
 import org.springframework.boot.convert.ApplicationConversionService;
 import org.springframework.boot.testsupport.classpath.ForkedClassPath;
+import org.springframework.boot.testsupport.classpath.resources.WithResource;
 import org.springframework.boot.testsupport.system.CapturedOutput;
 import org.springframework.boot.testsupport.system.OutputCaptureExtension;
 import org.springframework.boot.web.embedded.netty.NettyReactiveWebServerFactory;
@@ -165,6 +167,7 @@ import static org.mockito.Mockito.spy;
  * @author Moritz Halbritter
  * @author Tadaya Tsuyukubo
  * @author Yanming Zhou
+ * @author Sijun Yang
  */
 @ExtendWith(OutputCaptureExtension.class)
 class SpringApplicationTests {
@@ -208,36 +211,43 @@ class SpringApplicationTests {
 	@Test
 	void sourcesMustNotBeNull() {
 		assertThatIllegalArgumentException().isThrownBy(() -> new SpringApplication((Class<?>[]) null).run())
-			.withMessageContaining("PrimarySources must not be null");
+			.withMessageContaining("'primarySources' must not be null");
 	}
 
 	@Test
 	void sourcesMustNotBeEmpty() {
-		assertThatIllegalArgumentException().isThrownBy(() -> new SpringApplication().run())
-			.withMessageContaining("Sources must not be empty");
+		assertThatIllegalStateException().isThrownBy(() -> new SpringApplication().run())
+			.withMessageContaining("No sources defined");
 	}
 
 	@Test
 	void sourcesMustBeAccessible() {
-		assertThatIllegalArgumentException()
+		assertThatExceptionOfType(BeanDefinitionStoreException.class)
 			.isThrownBy(() -> new SpringApplication(InaccessibleConfiguration.class).run())
+			.havingRootCause()
+			.isInstanceOf(IllegalArgumentException.class)
 			.withMessageContaining("No visible constructors");
 	}
 
 	@Test
+	@WithResource(name = "banner.txt", content = "Running a Test!")
 	void customBanner(CapturedOutput output) {
 		SpringApplication application = spy(new SpringApplication(ExampleConfig.class));
 		application.setWebApplicationType(WebApplicationType.NONE);
-		this.context = application.run("--spring.banner.location=classpath:test-banner.txt");
+		this.context = application.run();
 		assertThat(output).startsWith("Running a Test!");
+
 	}
 
 	@Test
+	@WithResource(name = "banner.txt", content = """
+			Running a Test!
+
+			${test.property}""")
 	void customBannerWithProperties(CapturedOutput output) {
 		SpringApplication application = spy(new SpringApplication(ExampleConfig.class));
 		application.setWebApplicationType(WebApplicationType.NONE);
-		this.context = application.run("--spring.banner.location=classpath:test-banner-with-placeholder.txt",
-				"--test.property=123456");
+		this.context = application.run("--test.property=123456");
 		assertThat(output).containsPattern("Running a Test!\\s+123456");
 	}
 
@@ -252,13 +262,12 @@ class SpringApplicationTests {
 	@Test
 	void logsActiveProfilesWithoutProfileAndMultipleDefaults(CapturedOutput output) {
 		MockEnvironment environment = new MockEnvironment();
-		environment.setDefaultProfiles("p0,p1", "default");
+		environment.setDefaultProfiles("p0", "default");
 		SpringApplication application = new SpringApplication(ExampleConfig.class);
 		application.setWebApplicationType(WebApplicationType.NONE);
 		application.setEnvironment(environment);
 		this.context = application.run();
-		assertThat(output)
-			.contains("No active profile set, falling back to 2 default profiles: \"p0,p1\", \"default\"");
+		assertThat(output).contains("No active profile set, falling back to 2 default profiles: \"p0\", \"default\"");
 	}
 
 	@Test
@@ -273,9 +282,9 @@ class SpringApplicationTests {
 	void logsActiveProfilesWithMultipleProfiles(CapturedOutput output) {
 		SpringApplication application = new SpringApplication(ExampleConfig.class);
 		application.setWebApplicationType(WebApplicationType.NONE);
-		application.setAdditionalProfiles("p1,p2", "p3");
+		application.setAdditionalProfiles("p1", "p2");
 		application.run();
-		assertThat(output).contains("The following 2 profiles are active: \"p1,p2\", \"p3\"");
+		assertThat(output).contains("The following 2 profiles are active: \"p1\", \"p2\"");
 	}
 
 	@Test
@@ -288,6 +297,7 @@ class SpringApplicationTests {
 	}
 
 	@Test
+	@WithResource(name = "bindtoapplication.properties", content = "spring.main.banner-mode=off")
 	void triggersConfigFileApplicationListenerBeforeBinding() {
 		SpringApplication application = new SpringApplication(ExampleConfig.class);
 		application.setWebApplicationType(WebApplicationType.NONE);
@@ -539,6 +549,7 @@ class SpringApplicationTests {
 	}
 
 	@Test
+	@WithResource(name = "application.properties", content = "foo=bucket")
 	void propertiesFileEnhancesEnvironment() {
 		SpringApplication application = new SpringApplication(ExampleConfig.class);
 		application.setWebApplicationType(WebApplicationType.NONE);
@@ -571,6 +582,8 @@ class SpringApplicationTests {
 	}
 
 	@Test
+	@WithResource(name = "application.properties", content = "my.property=fromapplicationproperties")
+	@WithResource(name = "application-other.properties", content = "my.property=fromotherpropertiesfile")
 	void addProfilesOrderWithProperties() {
 		SpringApplication application = new SpringApplication(ExampleConfig.class);
 		application.setWebApplicationType(WebApplicationType.NONE);
@@ -583,6 +596,7 @@ class SpringApplicationTests {
 	}
 
 	@Test
+	@WithResource(name = "application.properties", content = "foo=bucket")
 	void emptyCommandLinePropertySourceNotAdded() {
 		SpringApplication application = new SpringApplication(ExampleConfig.class);
 		application.setWebApplicationType(WebApplicationType.NONE);
@@ -813,11 +827,13 @@ class SpringApplicationTests {
 	}
 
 	@Test
+	@WithSampleBeansXmlResource
+	@WithResource(name = "application.properties", content = "sample.app.test.prop=*")
 	void wildcardSources() {
 		TestSpringApplication application = new TestSpringApplication();
 		application.getSources().add("classpath*:org/springframework/boot/sample-${sample.app.test.prop}.xml");
 		application.setWebApplicationType(WebApplicationType.NONE);
-		this.context = application.run();
+		this.context = application.run("--spring.config.location=classpath:/");
 	}
 
 	@Test
@@ -1138,6 +1154,8 @@ class SpringApplicationTests {
 	}
 
 	@Test
+	@WithResource(name = "application-withwebapplicationtype.yml",
+			content = "spring.main.web-application-type: reactive")
 	void environmentIsConvertedIfTypeDoesNotMatch() {
 		ConfigurableApplicationContext context = new SpringApplication(ExampleReactiveWebConfig.class)
 			.run("--spring.profiles.active=withwebapplicationtype");
@@ -1194,6 +1212,7 @@ class SpringApplicationTests {
 	}
 
 	@Test
+	@WithResource(name = "custom-config/application.yml", content = "hello: world")
 	void relaxedBindingShouldWorkBeforeEnvironmentIsPrepared() {
 		SpringApplication application = new SpringApplication(ExampleConfig.class);
 		application.setWebApplicationType(WebApplicationType.NONE);
@@ -1328,6 +1347,8 @@ class SpringApplicationTests {
 	}
 
 	@Test
+	@WithResource(name = "spring-application-config-property-source.properties",
+			content = "test.name=spring-application-config-property-source")
 	void movesConfigClassPropertySourcesToEnd() {
 		SpringApplication application = new SpringApplication(PropertySourceConfig.class);
 		application.setWebApplicationType(WebApplicationType.NONE);
@@ -1586,6 +1607,11 @@ class SpringApplicationTests {
 	static class InaccessibleConfiguration {
 
 		private InaccessibleConfiguration() {
+		}
+
+		@Bean
+		String testMessage() {
+			return "test";
 		}
 
 	}

@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2024 the original author or authors.
+ * Copyright 2012-2025 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,12 +32,16 @@ import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.actuate.endpoint.web.PathMappedEndpoint;
 import org.springframework.boot.actuate.endpoint.web.PathMappedEndpoints;
 import org.springframework.boot.actuate.endpoint.web.WebServerNamespace;
+import org.springframework.boot.web.context.WebServerApplicationContext;
+import org.springframework.boot.web.server.WebServer;
 import org.springframework.context.support.StaticApplicationContext;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.http.server.reactive.MockServerHttpResponse;
 import org.springframework.security.web.server.util.matcher.ServerWebExchangeMatcher;
+import org.springframework.web.context.support.StaticWebApplicationContext;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebHandler;
 import org.springframework.web.server.adapter.HttpWebHandlerAdapter;
@@ -51,6 +55,7 @@ import static org.mockito.Mockito.mock;
  *
  * @author Madhura Bhave
  * @author Phillip Webb
+ * @author Chris Bono
  */
 class EndpointRequestTests {
 
@@ -60,6 +65,13 @@ class EndpointRequestTests {
 		assertMatcher(matcher).matches("/actuator/foo");
 		assertMatcher(matcher).matches("/actuator/bar");
 		assertMatcher(matcher).matches("/actuator");
+	}
+
+	@Test
+	void toAnyEndpointWithHttpMethodShouldRespectRequestMethod() {
+		ServerWebExchangeMatcher matcher = EndpointRequest.toAnyEndpoint().withHttpMethod(HttpMethod.POST);
+		assertMatcher(matcher, "/actuator").matches(HttpMethod.POST, "/actuator/foo");
+		assertMatcher(matcher, "/actuator").doesNotMatch(HttpMethod.GET, "/actuator/foo");
 	}
 
 	@Test
@@ -315,10 +327,8 @@ class EndpointRequestTests {
 			PathMappedEndpoints pathMappedEndpoints, WebServerNamespace namespace) {
 		StaticApplicationContext context = new StaticApplicationContext();
 		if (namespace != null && !WebServerNamespace.SERVER.equals(namespace)) {
-			StaticApplicationContext parentContext = new StaticApplicationContext();
-			parentContext.setId("app");
+			NamedStaticWebApplicationContext parentContext = new NamedStaticWebApplicationContext(namespace);
 			context.setParent(parentContext);
-			context.setId(parentContext.getId() + ":" + namespace);
 		}
 		context.registerBean(WebEndpointProperties.class);
 		if (pathMappedEndpoints != null) {
@@ -351,6 +361,27 @@ class EndpointRequestTests {
 		return endpoint;
 	}
 
+	static class NamedStaticWebApplicationContext extends StaticWebApplicationContext
+			implements WebServerApplicationContext {
+
+		private final WebServerNamespace webServerNamespace;
+
+		NamedStaticWebApplicationContext(WebServerNamespace webServerNamespace) {
+			this.webServerNamespace = webServerNamespace;
+		}
+
+		@Override
+		public WebServer getWebServer() {
+			return null;
+		}
+
+		@Override
+		public String getServerNamespace() {
+			return (this.webServerNamespace != null) ? this.webServerNamespace.getValue() : null;
+		}
+
+	}
+
 	static class RequestMatcherAssert implements AssertDelegateTarget {
 
 		private final StaticApplicationContext context;
@@ -368,6 +399,12 @@ class EndpointRequestTests {
 			matches(exchange);
 		}
 
+		void matches(HttpMethod httpMethod, String path) {
+			ServerWebExchange exchange = webHandler()
+				.createExchange(MockServerHttpRequest.method(httpMethod, path).build(), new MockServerHttpResponse());
+			matches(exchange);
+		}
+
 		private void matches(ServerWebExchange exchange) {
 			assertThat(this.matcher.matches(exchange).block(Duration.ofSeconds(30)).isMatch())
 				.as("Matches " + getRequestPath(exchange))
@@ -377,6 +414,12 @@ class EndpointRequestTests {
 		void doesNotMatch(String path) {
 			ServerWebExchange exchange = webHandler().createExchange(MockServerHttpRequest.get(path).build(),
 					new MockServerHttpResponse());
+			doesNotMatch(exchange);
+		}
+
+		void doesNotMatch(HttpMethod httpMethod, String path) {
+			ServerWebExchange exchange = webHandler()
+				.createExchange(MockServerHttpRequest.method(httpMethod, path).build(), new MockServerHttpResponse());
 			doesNotMatch(exchange);
 		}
 

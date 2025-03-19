@@ -5,7 +5,7 @@ import org.gradle.plugins.ide.eclipse.model.Library
 plugins {
 	id "java-gradle-plugin"
 	id "maven-publish"
-	id "org.antora"
+	id "org.springframework.boot.antora-contributor"
 	id "org.springframework.boot.docker-test"
 	id "org.springframework.boot.maven-repository"
 	id "org.springframework.boot.optional-dependencies"
@@ -14,7 +14,6 @@ plugins {
 description = "Spring Boot Gradle Plugins"
 
 configurations {
-	antoraContent
 	"testCompileClasspath" {
 		// Downgrade SLF4J is required for tests to run in Eclipse
 		resolutionStrategy.force("org.slf4j:slf4j-api:1.7.36")
@@ -114,40 +113,30 @@ javadoc {
 		splitIndex = true
 		use = true
 		windowTitle = "Spring Boot Gradle Plugin ${project.version} API"
-		links "https://docs.gradle.org/$gradle.gradleVersion/javadoc/"
-		links "https://docs.oracle.com/en/java/javase/17/docs/api/"
+		links "https://docs.gradle.org/$gradle.gradleVersion/javadoc"
+		links "https://docs.oracle.com/en/java/javase/17/docs/api"
 	}
 }
 
-def antoraGradlePluginLocalAggregateContent  = tasks.register("antoraGradlePluginLocalAggregateContent", Zip) {
-	destinationDirectory = layout.buildDirectory.dir('generated/docs/antora-content')
-	archiveClassifier = "gradle-plugin-local-aggregate-content"
-	from(tasks.getByName("generateAntoraYml")) {
-		into "modules"
-	}
-}
-
-def antoraGradlePluginCatalogContent = tasks.register("antoraGradlePluginCatalogContent", Zip) {
-	destinationDirectory = layout.buildDirectory.dir('generated/docs/antora-content')
-	archiveClassifier = "gradle-plugin-catalog-content"
-	from(javadoc) {
-		into "api/java"
+antoraContributions {
+	'gradle-plugin' {
+		catalogContent {
+			from(javadoc) {
+				into("api/java")
+			}
+		}
+		localAggregateContent {
+			from(tasks.named("generateAntoraYml")) {
+				into "modules"
+			}
+		}
+		source()
 	}
 }
 
 tasks.named("generateAntoraPlaybook") {
-	xrefStubs = ["appendix:.*", "api:.*", "reference:.*"]
-	excludeJavadocExtension = true
-	alwaysInclude = [name: "gradle-plugin", classifier: "local-aggregate-content"]
-	dependsOn antoraGradlePluginLocalAggregateContent
-}
-
-tasks.named("antora") {
-	inputs.files(antoraGradlePluginLocalAggregateContent, antoraGradlePluginCatalogContent)
-}
-
-artifacts {
-	antoraContent antoraGradlePluginCatalogContent
+	antoraExtensions.xref.stubs = ["appendix:.*", "api:.*", "reference:.*"]
+	asciidocExtensions.excludeJavadocExtension = true
 }
 
 plugins.withType(EclipsePlugin) {
@@ -164,4 +153,8 @@ plugins.withType(EclipsePlugin) {
 			}
 		}
 	}
+}
+
+toolchain {
+	maximumCompatibleJavaVersion = JavaLanguageVersion.of(23)
 }

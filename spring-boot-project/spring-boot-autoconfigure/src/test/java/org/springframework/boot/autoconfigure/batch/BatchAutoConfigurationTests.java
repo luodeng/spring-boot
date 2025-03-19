@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2024 the original author or authors.
+ * Copyright 2012-2025 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -72,12 +72,18 @@ import org.springframework.boot.sql.init.DatabaseInitializationSettings;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.boot.testsupport.classpath.resources.WithPackageResources;
+import org.springframework.boot.testsupport.classpath.resources.WithResource;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.convert.support.ConfigurableConversionService;
+import org.springframework.core.task.AsyncTaskExecutor;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
+import org.springframework.core.task.SyncTaskExecutor;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -87,7 +93,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
-import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 
@@ -284,13 +290,13 @@ class BatchAutoConfigurationTests {
 	}
 
 	@Test
+	@WithPackageResources("custom-schema.sql")
 	void testRenamePrefix() {
 		this.contextRunner
 			.withUserConfiguration(TestConfiguration.class, EmbeddedDataSourceConfiguration.class,
 					HibernateJpaAutoConfiguration.class)
 			.withPropertyValues("spring.datasource.generate-unique-name=true",
-					"spring.batch.jdbc.schema:classpath:batch/custom-schema.sql",
-					"spring.batch.jdbc.tablePrefix:PREFIX_")
+					"spring.batch.jdbc.schema:classpath:custom-schema.sql", "spring.batch.jdbc.tablePrefix:PREFIX_")
 			.run((context) -> {
 				assertThat(context).hasSingleBean(JobLauncher.class);
 				assertThat(context.getBean(BatchProperties.class).getJdbc().getInitializeSchema())
@@ -362,6 +368,22 @@ class BatchAutoConfigurationTests {
 	}
 
 	@Test
+	void testBatchTaskExecutor() {
+		this.contextRunner
+			.withUserConfiguration(TestConfiguration.class, BatchTaskExecutorConfiguration.class,
+					EmbeddedDataSourceConfiguration.class)
+			.run((context) -> {
+				assertThat(context).hasSingleBean(SpringBootBatchConfiguration.class).hasBean("batchTaskExecutor");
+				TaskExecutor batchTaskExecutor = context.getBean("batchTaskExecutor", TaskExecutor.class);
+				assertThat(batchTaskExecutor).isInstanceOf(AsyncTaskExecutor.class);
+				assertThat(context.getBean(SpringBootBatchConfiguration.class).getTaskExecutor())
+					.isEqualTo(batchTaskExecutor);
+				assertThat(context.getBean(JobLauncher.class)).hasFieldOrPropertyWithValue("taskExecutor",
+						batchTaskExecutor);
+			});
+	}
+
+	@Test
 	void jobRepositoryBeansDependOnBatchDataSourceInitializer() {
 		this.contextRunner.withUserConfiguration(TestConfiguration.class, EmbeddedDataSourceConfiguration.class)
 			.run((context) -> {
@@ -392,6 +414,7 @@ class BatchAutoConfigurationTests {
 	}
 
 	@Test
+	@WithResource(name = "db/changelog/db.changelog-master.yaml", content = "databaseChangeLog:")
 	void jobRepositoryBeansDependOnLiquibase() {
 		this.contextRunner.withUserConfiguration(TestConfiguration.class, EmbeddedDataSourceConfiguration.class)
 			.withUserConfiguration(LiquibaseAutoConfiguration.class)
@@ -464,7 +487,7 @@ class BatchAutoConfigurationTests {
 		JobLauncherApplicationRunner runner = createInstance();
 		runner.setJobs(Arrays.asList(mockJob("one"), mockJob("two")));
 		runner.setJobName("three");
-		assertThatIllegalArgumentException().isThrownBy(runner::afterPropertiesSet)
+		assertThatIllegalStateException().isThrownBy(runner::afterPropertiesSet)
 			.withMessage("No job found with name 'three'");
 	}
 
@@ -472,7 +495,7 @@ class BatchAutoConfigurationTests {
 	void whenTheUserDefinesAJobNameThatDoesNotExistWithRegisteredJobFailsFast() {
 		JobLauncherApplicationRunner runner = createInstance("one", "two");
 		runner.setJobName("three");
-		assertThatIllegalArgumentException().isThrownBy(runner::afterPropertiesSet)
+		assertThatIllegalStateException().isThrownBy(runner::afterPropertiesSet)
 			.withMessage("No job found with name 'three'");
 	}
 
@@ -516,13 +539,12 @@ class BatchAutoConfigurationTests {
 	static class BatchDataSourceConfiguration {
 
 		@Bean
-		@Primary
 		DataSource normalDataSource() {
 			return DataSourceBuilder.create().url("jdbc:hsqldb:mem:normal").username("sa").build();
 		}
 
 		@BatchDataSource
-		@Bean
+		@Bean(defaultCandidate = false)
 		DataSource batchDataSource() {
 			return DataSourceBuilder.create().url("jdbc:hsqldb:mem:batchdatasource").username("sa").build();
 		}
@@ -544,9 +566,25 @@ class BatchAutoConfigurationTests {
 		}
 
 		@BatchTransactionManager
-		@Bean
+		@Bean(defaultCandidate = false)
 		PlatformTransactionManager batchTransactionManager() {
 			return mock(PlatformTransactionManager.class);
+		}
+
+	}
+
+	@Configuration(proxyBeanMethods = false)
+	static class BatchTaskExecutorConfiguration {
+
+		@Bean
+		TaskExecutor taskExecutor() {
+			return new SyncTaskExecutor();
+		}
+
+		@BatchTaskExecutor
+		@Bean(defaultCandidate = false)
+		TaskExecutor batchTaskExecutor() {
+			return new SimpleAsyncTaskExecutor();
 		}
 
 	}

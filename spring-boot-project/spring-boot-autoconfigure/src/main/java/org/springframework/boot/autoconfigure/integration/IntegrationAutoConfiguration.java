@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2024 the original author or authors.
+ * Copyright 2012-2025 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,10 +24,12 @@ import javax.sql.DataSource;
 import io.rsocket.transport.netty.server.TcpServerTransport;
 
 import org.springframework.beans.factory.BeanFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.autoconfigure.condition.AnyNestedCondition;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -84,6 +86,7 @@ import org.springframework.util.StringUtils;
  * @author Vedran Pavic
  * @author Madhura Bhave
  * @author Yong-Hyun Kim
+ * @author Yanming Zhou
  * @since 1.1.0
  */
 @AutoConfiguration(after = { DataSourceAutoConfiguration.class, JmxAutoConfiguration.class,
@@ -129,7 +132,8 @@ public class IntegrationAutoConfiguration {
 
 		@Bean(PollerMetadata.DEFAULT_POLLER)
 		@ConditionalOnMissingBean(name = PollerMetadata.DEFAULT_POLLER)
-		public PollerMetadata defaultPollerMetadata(IntegrationProperties integrationProperties) {
+		public PollerMetadata defaultPollerMetadata(IntegrationProperties integrationProperties,
+				ObjectProvider<PollerMetadataCustomizer> customizers) {
 			IntegrationProperties.Poller poller = integrationProperties.getPoller();
 			MutuallyExclusiveConfigurationPropertiesException.throwIfMultipleNonNullValuesIn((entries) -> {
 				entries.put("spring.integration.poller.cron",
@@ -142,6 +146,7 @@ public class IntegrationAutoConfiguration {
 			map.from(poller::getMaxMessagesPerPoll).to(pollerMetadata::setMaxMessagesPerPoll);
 			map.from(poller::getReceiveTimeout).as(Duration::toMillis).to(pollerMetadata::setReceiveTimeout);
 			map.from(poller).as(this::asTrigger).to(pollerMetadata::setTrigger);
+			customizers.orderedStream().forEach((customizer) -> customizer.customize(pollerMetadata));
 			return pollerMetadata;
 		}
 
@@ -204,7 +209,7 @@ public class IntegrationAutoConfiguration {
 	@ConditionalOnClass(EnableIntegrationMBeanExport.class)
 	@ConditionalOnMissingBean(value = IntegrationMBeanExporter.class, search = SearchStrategy.CURRENT)
 	@ConditionalOnBean(MBeanServer.class)
-	@ConditionalOnProperty(prefix = "spring.jmx", name = "enabled", havingValue = "true", matchIfMissing = true)
+	@ConditionalOnBooleanProperty("spring.jmx.enabled")
 	protected static class IntegrationJmxConfiguration {
 
 		@Bean
@@ -259,7 +264,7 @@ public class IntegrationAutoConfiguration {
 	protected static class IntegrationJdbcConfiguration {
 
 		@Bean
-		@ConditionalOnMissingBean(IntegrationDataSourceScriptDatabaseInitializer.class)
+		@ConditionalOnMissingBean
 		public IntegrationDataSourceScriptDatabaseInitializer integrationDataSourceInitializer(DataSource dataSource,
 				IntegrationProperties properties) {
 			return new IntegrationDataSourceScriptDatabaseInitializer(dataSource, properties.getJdbc());
@@ -347,12 +352,13 @@ public class IntegrationAutoConfiguration {
 					super(ConfigurationPhase.REGISTER_BEAN);
 				}
 
-				@ConditionalOnProperty(prefix = "spring.integration.rsocket.client", name = "uri")
+				@ConditionalOnProperty("spring.integration.rsocket.client.uri")
 				static class WebSocketAddressConfigured {
 
 				}
 
-				@ConditionalOnProperty(prefix = "spring.integration.rsocket.client", name = { "host", "port" })
+				@ConditionalOnProperty({ "spring.integration.rsocket.client.host",
+						"spring.integration.rsocket.client.port" })
 				static class TcpAddressConfigured {
 
 				}

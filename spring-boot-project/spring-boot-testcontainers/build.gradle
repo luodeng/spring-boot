@@ -64,11 +64,13 @@ dependencies {
 	optional("org.springframework.data:spring-data-neo4j")
 	optional("org.testcontainers:activemq")
 	optional("org.testcontainers:cassandra")
+	optional("org.testcontainers:clickhouse")
 	optional("org.testcontainers:couchbase")
 	optional("org.testcontainers:elasticsearch")
 	optional("org.testcontainers:grafana")
 	optional("org.testcontainers:jdbc")
 	optional("org.testcontainers:kafka")
+	optional("org.testcontainers:ldap")
 	optional("org.testcontainers:mariadb")
 	optional("org.testcontainers:mongodb")
 	optional("org.testcontainers:mssqlserver")
@@ -99,4 +101,8 @@ dependencies {
 	testImplementation("org.springframework.kafka:spring-kafka")
 	testImplementation("org.springframework.pulsar:spring-pulsar")
 	testImplementation("org.testcontainers:junit-jupiter")
+}
+
+dockerTest {
+	jvmArgs += "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED"
 }

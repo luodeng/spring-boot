@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2024 the original author or authors.
+ * Copyright 2012-2025 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.function.Consumer;
 
 import org.springframework.boot.buildpack.platform.docker.DockerApi;
+import org.springframework.boot.buildpack.platform.docker.DockerLog;
 import org.springframework.boot.buildpack.platform.docker.TotalProgressEvent;
 import org.springframework.boot.buildpack.platform.docker.TotalProgressPullListener;
 import org.springframework.boot.buildpack.platform.docker.TotalProgressPushListener;
@@ -28,6 +29,7 @@ import org.springframework.boot.buildpack.platform.docker.UpdateListener;
 import org.springframework.boot.buildpack.platform.docker.configuration.DockerConfiguration;
 import org.springframework.boot.buildpack.platform.docker.configuration.ResolvedDockerHost;
 import org.springframework.boot.buildpack.platform.docker.transport.DockerEngineException;
+import org.springframework.boot.buildpack.platform.docker.type.Binding;
 import org.springframework.boot.buildpack.platform.docker.type.Image;
 import org.springframework.boot.buildpack.platform.docker.type.ImagePlatform;
 import org.springframework.boot.buildpack.platform.docker.type.ImageReference;
@@ -74,7 +76,7 @@ public class Builder {
 	 * @param log a logger used to record output
 	 */
 	public Builder(BuildLog log) {
-		this(log, new DockerApi(), null);
+		this(log, new DockerApi(null, BuildLogAdapter.get(log)), null);
 	}
 
 	/**
@@ -84,20 +86,21 @@ public class Builder {
 	 * @since 2.4.0
 	 */
 	public Builder(BuildLog log, DockerConfiguration dockerConfiguration) {
-		this(log, new DockerApi((dockerConfiguration != null) ? dockerConfiguration.getHost() : null),
-				dockerConfiguration);
+		this(log, new DockerApi((dockerConfiguration != null) ? dockerConfiguration.getHost() : null,
+				BuildLogAdapter.get(log)), dockerConfiguration);
 	}
 
 	Builder(BuildLog log, DockerApi docker, DockerConfiguration dockerConfiguration) {
-		Assert.notNull(log, "Log must not be null");
+		Assert.notNull(log, "'log' must not be null");
 		this.log = log;
 		this.docker = docker;
 		this.dockerConfiguration = dockerConfiguration;
 	}
 
 	public void build(BuildRequest request) throws DockerEngineException, IOException {
-		Assert.notNull(request, "Request must not be null");
+		Assert.notNull(request, "'request' must not be null");
 		this.log.start(request);
+		validateBindings(request.getBindings());
 		String domain = request.getBuilder().getDomain();
 		PullPolicy pullPolicy = request.getPullPolicy();
 		ImageFetcher imageFetcher = new ImageFetcher(domain, getBuilderAuthHeader(), pullPolicy,
@@ -122,6 +125,14 @@ public class Builder {
 		}
 		finally {
 			this.docker.image().remove(ephemeralBuilder.getName(), true);
+		}
+	}
+
+	private void validateBindings(List<Binding> bindings) {
+		for (Binding binding : bindings) {
+			if (binding.usesSensitiveContainerPath()) {
+				this.log.sensitiveTargetBindingDetected(binding);
+			}
 		}
 	}
 
@@ -220,20 +231,20 @@ public class Builder {
 		}
 
 		Image fetchImage(ImageType type, ImageReference reference) throws IOException {
-			Assert.notNull(type, "Type must not be null");
-			Assert.notNull(reference, "Reference must not be null");
+			Assert.notNull(type, "'type' must not be null");
+			Assert.notNull(reference, "'reference' must not be null");
 			Assert.state(this.authHeader == null || reference.getDomain().equals(this.domain),
 					() -> String.format("%s '%s' must be pulled from the '%s' authenticated registry",
 							StringUtils.capitalize(type.getDescription()), reference, this.domain));
 			if (this.pullPolicy == PullPolicy.ALWAYS) {
-				return pullImage(reference, type);
+				return checkPlatformMismatch(pullImage(reference, type), reference);
 			}
 			try {
-				return Builder.this.docker.image().inspect(reference);
+				return checkPlatformMismatch(Builder.this.docker.image().inspect(reference), reference);
 			}
 			catch (DockerEngineException ex) {
 				if (this.pullPolicy == PullPolicy.IF_NOT_PRESENT && ex.getStatusCode() == 404) {
-					return pullImage(reference, type);
+					return checkPlatformMismatch(pullImage(reference, type), reference);
 				}
 				throw ex;
 			}
@@ -248,6 +259,60 @@ public class Builder {
 				this.defaultPlatform = ImagePlatform.from(image);
 			}
 			return image;
+		}
+
+		private Image checkPlatformMismatch(Image image, ImageReference imageReference) {
+			if (this.defaultPlatform != null) {
+				ImagePlatform imagePlatform = ImagePlatform.from(image);
+				if (!imagePlatform.equals(this.defaultPlatform)) {
+					throw new PlatformMismatchException(imageReference, this.defaultPlatform, imagePlatform);
+				}
+			}
+			return image;
+		}
+
+	}
+
+	private static final class PlatformMismatchException extends RuntimeException {
+
+		private PlatformMismatchException(ImageReference imageReference, ImagePlatform requestedPlatform,
+				ImagePlatform actualPlatform) {
+			super("Image platform mismatch detected. The configured platform '%s' is not supported by the image '%s'. Requested platform '%s' but got '%s'"
+				.formatted(requestedPlatform, imageReference, requestedPlatform, actualPlatform));
+		}
+
+	}
+
+	/**
+	 * A {@link DockerLog} implementation that adapts to an {@link AbstractBuildLog}.
+	 */
+	static final class BuildLogAdapter implements DockerLog {
+
+		private final AbstractBuildLog log;
+
+		private BuildLogAdapter(AbstractBuildLog log) {
+			this.log = log;
+		}
+
+		@Override
+		public void log(String message) {
+			this.log.log(message);
+		}
+
+		/**
+		 * Creates {@link DockerLog} instance based on the provided {@link BuildLog}.
+		 * <p>
+		 * If the provided {@link BuildLog} instance is an {@link AbstractBuildLog}, the
+		 * method returns a {@link BuildLogAdapter}, otherwise it returns a default
+		 * {@link DockerLog#toSystemOut()}.
+		 * @param log the {@link BuildLog} instance to delegate
+		 * @return a {@link DockerLog} instance for logging
+		 */
+		static DockerLog get(BuildLog log) {
+			if (log instanceof AbstractBuildLog abstractBuildLog) {
+				return new BuildLogAdapter(abstractBuildLog);
+			}
+			return DockerLog.toSystemOut();
 		}
 
 	}

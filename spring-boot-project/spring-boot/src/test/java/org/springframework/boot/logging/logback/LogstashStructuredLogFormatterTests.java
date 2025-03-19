@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2024 the original author or authors.
+ * Copyright 2012-2025 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,6 +30,8 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Marker;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.then;
 
 /**
  * Tests for {@link LogstashStructuredLogFormatter}.
@@ -44,7 +46,12 @@ class LogstashStructuredLogFormatterTests extends AbstractStructuredLoggingTests
 	@BeforeEach
 	void setUp() {
 		super.setUp();
-		this.formatter = new LogstashStructuredLogFormatter(getThrowableProxyConverter());
+		this.formatter = new LogstashStructuredLogFormatter(null, getThrowableProxyConverter(), this.customizer);
+	}
+
+	@Test
+	void callsCustomizer() {
+		then(this.customizer).should().customize(any());
 	}
 
 	@Test
@@ -81,6 +88,19 @@ class LogstashStructuredLogFormatterTests extends AbstractStructuredLoggingTests
 					.formatted()
 					.replace("\n", "\\n")
 					.replace("\r", "\\r"));
+	}
+
+	@Test
+	void shouldFormatExceptionWithStackTracePrinter() {
+		this.formatter = new LogstashStructuredLogFormatter(new SimpleStackTracePrinter(), getThrowableProxyConverter(),
+				this.customizer);
+		LoggingEvent event = createEvent();
+		event.setThrowableProxy(new ThrowableProxy(new RuntimeException("Boom")));
+		event.setMDCPropertyMap(Collections.emptyMap());
+		String json = this.formatter.format(event);
+		Map<String, Object> deserialized = deserialize(json);
+		String stackTrace = (String) deserialized.get("stack_trace");
+		assertThat(stackTrace).isEqualTo("stacktrace:RuntimeException");
 	}
 
 }
